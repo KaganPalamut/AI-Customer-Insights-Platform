@@ -1,5 +1,4 @@
-﻿
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import joblib
 import plotly.express as px
@@ -7,122 +6,128 @@ import requests
 from bs4 import BeautifulSoup
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="AI Strateji Merkezi", layout="wide")
+st.set_page_config(page_title="AI Strateji Merkezi v2.1", layout="wide")
 
 # --- MODELLERİ YÜKLE ---
 @st.cache_resource
 def load_models():
-    model = joblib.load("sentiment_model.pkl")
-    vectorizer = joblib.load("tfidf_vectorizer.pkl")
-    return model, vectorizer
+    try:
+        model = joblib.load("sentiment_model.pkl")
+        vectorizer = joblib.load("tfidf_vectorizer.pkl")
+        return model, vectorizer
+    except Exception as e:
+        st.error(f"Model dosyaları bulunamadı: {e}")
+        return None, None
 
 model, vectorizer = load_models()
 
 # --- YARDIMCI FONKSİYONLAR ---
 def scrape_comments(url):
-    """Verilen URL'deki paragrafları çekerek veri çerçevesine dönüştürür."""
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, "html.parser")
-        # 10 karakterden uzun metinleri topluyoruz
-        comments = [p.text.strip() for p in soup.find_all("p") if len(p.text.strip()) > 10]
+        comments = [p.text.strip() for p in soup.find_all("p") if len(p.text.strip()) > 15]
         return pd.DataFrame({"Yorum": comments})
     except Exception as e:
         st.error(f"Veri çekilirken hata oluştu: {e}")
         return None
 
-def detect_category(text):
-    """Metin içindeki anahtar kelimelere göre kategori belirler."""
-    text = text.lower()
-    categories = {
-        "Lojistik/Kargo": ["kargo", "teslimat", "gecikti", "gelmedi", "paketleme", "kurye", "lojistik"],
-        "Ürün Kalitesi": ["bozuk", "kırık", "kalitesiz", "yırtık", "çalışmıyor", "defolu", "malzeme"],
-        "Fiyat/Ekonomi": ["pahalı", "zam", "fiyat", "iade", "ücret", "indirim", "ekonomi"],
-        "Müşteri Hizmetleri": ["destek", "temsilci", "muhatap", "cevap", "aramadı", "ilgisiz"]
+def detect_detailed_category(text):
+    text = str(text).lower()
+    logic_map = {
+        "Kargo Gecikmesi": ["geç geldi", "gecikti", "ulaşmadı", "kargo", "teslimat", "bekliyorum"],
+        "Hasarlı Ürün": ["kırık", "ezik", "hasarlı", "yırtık", "parçalanmış", "bozuk", "defolu"],
+        "Fiyat Şikayeti": ["pahalı", "değmez", "fiyatı", "zam", "maliyet"],
+        "Müşteri İlgisizliği": ["cevap vermiyor", "muhatap", "temsilci", "ilgisiz", "destek"],
+        "Kalite Sorunu": ["kalitesiz", "beklediğim", "kötü", "çöp", "berbat"],
+        "İade Problemi": ["iade", "paramı", "süreç", "geri gönderdim"]
     }
-    for cat, keywords in categories.items():
+    for cat, keywords in logic_map.items():
         if any(word in text for word in keywords):
             return cat
-    return "Diğer"
+    return "Diğer/Genel"
 
 # --- ARAYÜZ (SIDEBAR) ---
 st.sidebar.title("🛠️ Veri Giriş Merkezi")
-
-# Seçenek 1: Dosya Yükleme
 uploaded_file = st.sidebar.file_uploader("CSV Dosyası Yükle", type=["csv"])
-
 st.sidebar.markdown("---")
-
-# Seçenek 2: Web Scraping
 st.sidebar.subheader("🌐 Web'den Veri Çek")
-url_input = st.sidebar.text_input("Yorum çekilecek URL:", value="https://tr.wikipedia.org/wiki/Türkiye")
+url_input = st.sidebar.text_input("URL girin:", value="https://tr.wikipedia.org/wiki/Türkiye")
 scrape_btn = st.sidebar.button("Verileri Kazı")
 
-# Veri Kaynağı Kontrolü
 if 'df' not in st.session_state:
     st.session_state['df'] = None
 
+# Veri Yükleme Mantığı
 if uploaded_file:
-    st.session_state['df'] = pd.read_csv(uploaded_file)
+    try:
+        st.session_state['df'] = pd.read_csv(uploaded_file, encoding='utf-8')
+    except:
+        uploaded_file.seek(0)
+        st.session_state['df'] = pd.read_csv(uploaded_file, encoding='latin-1')
 elif scrape_btn and url_input:
-    with st.spinner("İnternetten veriler çekiliyor..."):
-        scraped_data = scrape_comments(url_input)
-        if scraped_data is not None:
-            st.session_state['df'] = scraped_data
-            st.sidebar.success(f"{len(scraped_data)} satır veri bulundu!")
+    scraped_data = scrape_comments(url_input)
+    if scraped_data is not None:
+        st.session_state['df'] = scraped_data
 
 df = st.session_state['df']
 
 # --- ANA PANEL ---
 st.title("🚀 AI Müşteri Deneyimi & Strateji Paneli")
 
-if df is not None and "Yorum" in df.columns:
-    # 1. Analizleri Yap
-    df['Duygu'] = model.predict(vectorizer.transform(df['Yorum']))
-    df['Kategori'] = df['Yorum'].apply(detect_category)
+if df is not None and not df.empty:
+    try:
+        # Analiz Süreci
+        X_transformed = vectorizer.transform(df['Yorum'])
+        df['Duygu'] = model.predict(X_transformed)
+        df['Detaylı Kategori'] = df['Yorum'].apply(detect_detailed_category)
 
-    # 2. Metrikler
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Toplam Veri", len(df))
-    col2.metric("Negatif Sayısı", len(df[df['Duygu'] == 'Negatif']))
-    col3.metric("Kritik Odak", df['Kategori'].mode()[0] if not df['Kategori'].empty else "Belirlenemedi")
-
-    # 3. Grafikler
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_pie = px.pie(df, names='Duygu', title="Duygu Analizi Dağılımı", color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_pie, use_container_width=True)
-    
-    with c2:
-        # Hatalı olan kısım burasıydı, düzeltildi:
-        kategori_ozet = df['Kategori'].value_counts().reset_index()
-        kategori_ozet.columns = ['Kategori', 'Adet']
-        fig_bar = px.bar(kategori_ozet, x='Kategori', y='Adet', title="Kategori Bazlı Dağılım", color='Kategori')
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # 4. AI Stratejik Tavsiyeler
-    st.markdown("---")
-    st.header("💡 AI Stratejik Tavsiye Motoru")
-    
-    neg_df = df[df['Duygu'] == 'Negatif']
-    if not neg_df.empty:
-        top_issue = neg_df['Kategori'].value_counts().idxmax()
+        # 1. Üst Metrikler
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Toplam Veri", len(df))
         
-        advice_map = {
-            "Lojistik/Kargo": "⚠️ Lojistik süreçlerde aksama tespit edildi. Kargo firması ile görüşülmeli.",
-            "Ürün Kalitesi": "🛠️ Ürün kalitesine yönelik spesifik şikayetler var. Ar-Ge birimi bilgilendirilmeli.",
-            "Fiyat/Ekonomi": "💰 Fiyat algısı negatif eğilimde. Kampanya veya indirim planlanabilir.",
-            "Müşteri Hizmetleri": "📞 Müşteri temsilcisi yanıt süreleri veya tavırları iyileştirilmeli.",
-            "Diğer": "🔍 Verilerde genel bir memnuniyetsizlik var, detaylı anket yapılmalı."
-        }
-        st.info(f"**Ana Sorun Kaynağı:** {top_issue}\n\n**Önerilen Strateji:** {advice_map.get(top_issue)}")
-    else:
-        st.success("Analiz edilen verilerde kritik bir negatif duruma rastlanmadı.")
+        neg_sayisi = len(df[df['Duygu'] == 'Negatif'])
+        m2.metric("Negatif Tahmini", neg_sayisi)
+        
+        # Sorun tespiti
+        gercek_sorunlar_df = df[df['Detaylı Kategori'] != "Diğer/Genel"]
+        top_issue = gercek_sorunlar_df['Detaylı Kategori'].mode()[0] if not gercek_sorunlar_df.empty else "Sorun Yok"
+        m3.metric("En Büyük Sorun", top_issue)
 
-    # 5. Tablo
-    with st.expander("Veri Detaylarını Gör"):
-        st.dataframe(df)
+        # 2. Grafikler
+        g1, g2 = st.columns(2)
+        with g1:
+            fig_pie = px.pie(df, names='Duygu', title="Duygu Dağılımı", color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with g2:
+            kat_sayi = df['Detaylı Kategori'].value_counts().reset_index()
+            kat_sayi.columns = ['Kategori', 'Adet']
+            fig_bar = px.bar(kat_sayi, x='Kategori', y='Adet', title="Konu Dağılımı", color='Kategori')
+            st.plotly_chart(fig_bar, use_container_width=True)
 
+        # 3. AI Strateji Motoru
+        st.markdown("---")
+        st.header("💡 AI Strateji Motoru")
+        
+        if top_issue != "Sorun Yok":
+            st.warning(f"Yoğun Şikayet Odağı: **{top_issue}**")
+            advice_logic = {
+                "Kargo Gecikmesi": "🚚 **Eylem:** Lojistik partneriyle performans görüşmesi yapın.",
+                "Hasarlı Ürün": "📦 **Eylem:** Paketleme kontrolünü artırın ve kargo tazmin süreci başlatın.",
+                "Fiyat Şikayeti": "🏷️ **Eylem:** Rakip analizi yapın, fiyat-performans vurgulu kampanya yapın.",
+                "Müşteri İlgisizliği": "📞 **Eylem:** Destek ekibi kapasitesini artırın.",
+                "Kalite Sorunu": "🔍 **Eylem:** Tedarik denetimini sıkılaştırın.",
+                "İade Problemi": "🔄 **Eylem:** İade sürecini hızlandırın."
+            }
+            st.info(advice_logic.get(top_issue, "Genel iyileştirme süreci başlatın."))
+        else:
+            st.success("Harika! Belirgin bir şikayet odağı bulunamadı.")
+
+        with st.expander("Tüm Verileri Gör"):
+            st.dataframe(df)
+
+    except Exception as e:
+        st.error(f"Analiz sırasında hata oluştu: {e}")
 else:
-    st.info("Analiz başlamak için soldan dosya yükleyin veya bir URL girip 'Verileri Kazı' butonuna basın.")
+    st.info("📊 Başlamak için veri yükleyin veya bir URL girin.")
